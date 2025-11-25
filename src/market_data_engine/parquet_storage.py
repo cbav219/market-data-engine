@@ -141,6 +141,8 @@ class ParquetStorage:
         
         # Sort by timestamp
         df = df.sort_values('timestamp').reset_index(drop=True)
+        if not pd.api.types.is_datetime64_any_dtype(df['timestamp']):
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
         
         # Calculate daily returns
         df['daily_return'] = df['close'].pct_change()
@@ -149,6 +151,152 @@ class ParquetStorage:
         df['volatility'] = df['daily_return'].rolling(window=window).std()
         
         return df[['timestamp', 'close', 'daily_return', 'volatility']]
+    
+    def get_avg_daily_volume(self) -> pd.DataFrame:
+        """
+        Calculate average daily volume per ticker.
+        
+        Returns:
+            DataFrame with ticker and avg_daily_volume.
+        """
+        df = self.load_data()
+        if df.empty:
+            return pd.DataFrame(columns=['ticker', 'avg_daily_volume'])
+        
+        if not pd.api.types.is_datetime64_any_dtype(df['timestamp']):
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+        
+        df['date'] = df['timestamp'].dt.date
+        daily = df.groupby(['ticker', 'date'], observed=True)['volume'].sum().reset_index(name='daily_volume')
+        return daily.groupby('ticker', observed=True)['daily_volume'].mean().reset_index(name='avg_daily_volume')
+    
+    def get_rolling_close_average(
+        self,
+        ticker: str,
+        window: int = 5,
+    ) -> pd.DataFrame:
+        """
+        Compute rolling average of close prices for a ticker.
+        
+        Args:
+            ticker: Ticker symbol.
+            window: Rolling window size in rows (assumes minute bars in sample data).
+            
+        Returns:
+            DataFrame with timestamp, close, and rolling_close columns.
+        """
+        df = self.load_data(ticker)
+        if df.empty:
+            return pd.DataFrame(columns=['timestamp', 'close', 'rolling_close'])
+        
+        if not pd.api.types.is_datetime64_any_dtype(df['timestamp']):
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+        df = df.sort_values('timestamp').reset_index(drop=True)
+        df['rolling_close'] = df['close'].rolling(window=window).mean()
+        return df[['timestamp', 'close', 'rolling_close']]
+    
+    def get_top_tickers_by_return(
+        self,
+        start_date: str | pd.Timestamp,
+        end_date: str | pd.Timestamp,
+        limit: int = 3,
+    ) -> pd.DataFrame:
+        """
+        Identify top tickers by return over a window.
+        
+        Args:
+            start_date: Start date inclusive.
+            end_date: End date inclusive.
+            limit: Number of tickers to return.
+            
+        Returns:
+            DataFrame with ticker and return_pct.
+        """
+        df = self.load_data()
+        if df.empty:
+            return pd.DataFrame(columns=['ticker', 'return_pct'])
+        
+        if not pd.api.types.is_datetime64_any_dtype(df['timestamp']):
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+        
+        start_ts = pd.to_datetime(start_date)
+        end_ts = pd.to_datetime(end_date)
+        window = df[(df['timestamp'] >= start_ts) & (df['timestamp'] <= end_ts)]
+        if window.empty:
+            return pd.DataFrame(columns=['ticker', 'return_pct'])
+        
+        results = []
+        for ticker, group in window.groupby('ticker', observed=True):
+            group = group.sort_values('timestamp')
+            first_open = group.iloc[0]['open']
+            last_close = group.iloc[-1]['close']
+            if pd.isna(first_open) or pd.isna(last_close):
+                continue
+            return_pct = (last_close - first_open) / first_open * 100
+            results.append({'ticker': ticker, 'return_pct': return_pct})
+        
+        result_df = pd.DataFrame(results).sort_values('return_pct', ascending=False)
+        return result_df.head(limit)
+    
+    def get_first_last_prices_per_day(self, ticker: Optional[str] = None) -> pd.DataFrame:
+        """
+        Get first and last trade prices per day, optionally filtered by ticker.
+        
+        Args:
+            ticker: Optional ticker filter.
+            
+        Returns:
+            DataFrame with ticker, date, first_timestamp, first_price, last_timestamp, last_price.
+        """
+        df = self.load_data(ticker)
+        if df.empty:
+            return pd.DataFrame(columns=['ticker', 'date', 'first_timestamp', 'first_price', 'last_timestamp', 'last_price'])
+        
+        if not pd.api.types.is_datetime64_any_dtype(df['timestamp']):
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+        
+        df['date'] = df['timestamp'].dt.date
+        rows = []
+        for (tkr, date), group in df.groupby(['ticker', 'date'], observed=True):
+            group = group.sort_values('timestamp')
+            first_row = group.iloc[0]
+            last_row = group.iloc[-1]
+            rows.append({
+                'ticker': tkr,
+                'date': date,
+                'first_timestamp': first_row['timestamp'],
+                'first_price': first_row['open'],
+                'last_timestamp': last_row['timestamp'],
+                'last_price': last_row['close'],
+            })
+        return pd.DataFrame(rows).sort_values(['ticker', 'date']).reset_index(drop=True)
+    
+    def compute_volatility_all(self, window: int = 5) -> pd.DataFrame:
+        """
+        Compute rolling volatility for every ticker.
+        
+        Args:
+            window: Rolling window size.
+            
+        Returns:
+            DataFrame with ticker, timestamp, close, daily_return, volatility.
+        """
+        df = self.load_data()
+        if df.empty:
+            return pd.DataFrame(columns=['ticker', 'timestamp', 'close', 'daily_return', 'volatility'])
+        
+        if not pd.api.types.is_datetime64_any_dtype(df['timestamp']):
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+        
+        results = []
+        for ticker, group in df.groupby('ticker', observed=True):
+            group = group.sort_values('timestamp').reset_index(drop=True)
+            group['daily_return'] = group['close'].pct_change()
+            group['volatility'] = group['daily_return'].rolling(window=window).std()
+            group['ticker'] = ticker
+            results.append(group[['ticker', 'timestamp', 'close', 'daily_return', 'volatility']])
+        
+        return pd.concat(results, ignore_index=True) if results else pd.DataFrame(columns=['ticker', 'timestamp', 'close', 'daily_return', 'volatility'])
     
     def verify_integrity(self) -> dict:
         """

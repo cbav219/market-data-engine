@@ -72,6 +72,23 @@ class QueryEngine:
         else:
             raise ValueError(f"Invalid or unavailable source: {source}")
     
+    def get_avg_daily_volume(self, source: str = "sqlite") -> pd.DataFrame:
+        """
+        Calculate average daily volume per ticker.
+        
+        Args:
+            source: Data source ("sqlite" or "parquet").
+            
+        Returns:
+            DataFrame with ticker and avg_daily_volume.
+        """
+        if source == "sqlite" and self.sqlite:
+            return self.sqlite.get_avg_daily_volume()
+        elif source == "parquet" and self.parquet:
+            return self.parquet.get_avg_daily_volume()
+        else:
+            raise ValueError(f"Invalid or unavailable source: {source}")
+
     def get_weekly_returns(self, ticker: str, source: str = "sqlite") -> pd.DataFrame:
         """
         Calculate weekly returns for a ticker.
@@ -162,9 +179,71 @@ class QueryEngine:
         else:
             raise ValueError(f"Invalid or unavailable source: {source}")
     
-    def get_volatility(
+    def get_first_last_prices_per_day(
+        self,
+        ticker: Optional[str] = None,
+        source: str = "sqlite",
+    ) -> pd.DataFrame:
+        """
+        Get first and last trade prices per day, optionally filtered by ticker.
+        
+        Args:
+            ticker: Optional ticker symbol.
+            source: Data source.
+            
+        Returns:
+            DataFrame with ticker, date, first_timestamp, first_price, last_timestamp, last_price.
+        """
+        if source == "sqlite" and self.sqlite:
+            return self.sqlite.get_first_last_prices_per_day(ticker)
+        elif source == "parquet" and self.parquet:
+            return self.parquet.get_first_last_prices_per_day(ticker)
+        else:
+            raise ValueError(f"Invalid or unavailable source: {source}")
+    
+    def get_top_tickers_by_return(
+        self,
+        start_date: datetime,
+        end_date: datetime,
+        limit: int = 3,
+        source: str = "sqlite",
+    ) -> pd.DataFrame:
+        """
+        Identify top tickers by return over a window.
+        """
+        if source == "sqlite" and self.sqlite:
+            return self.sqlite.get_top_tickers_by_return(start_date, end_date, limit)
+        elif source == "parquet" and self.parquet:
+            return self.parquet.get_top_tickers_by_return(start_date, end_date, limit)
+        else:
+            raise ValueError(f"Invalid or unavailable source: {source}")
+    
+    def get_rolling_close_average(
         self,
         ticker: str,
+        window: int = 5,
+        source: str = "parquet",
+    ) -> pd.DataFrame:
+        """
+        Compute rolling average of close prices for a ticker.
+        """
+        if source == "parquet" and self.parquet:
+            return self.parquet.get_rolling_close_average(ticker, window)
+        elif source == "sqlite" and self.sqlite:
+            start = datetime(2000, 1, 1)
+            end = datetime(2100, 12, 31)
+            df = self.sqlite.get_price_range(ticker, start, end)
+            if df.empty:
+                return pd.DataFrame(columns=['timestamp', 'close', 'rolling_close'])
+            df = df.sort_values('timestamp').reset_index(drop=True)
+            df['rolling_close'] = df['close'].rolling(window=window).mean()
+            return df[['timestamp', 'close', 'rolling_close']]
+        else:
+            raise ValueError(f"Invalid or unavailable source: {source}")
+    
+    def get_volatility(
+        self,
+        ticker: Optional[str] = None,
         window: int = 5,
         source: str = "parquet",
     ) -> pd.DataFrame:
@@ -172,7 +251,7 @@ class QueryEngine:
         Compute rolling volatility for a ticker.
         
         Args:
-            ticker: Ticker symbol.
+            ticker: Ticker symbol. If None and using Parquet, compute for all tickers.
             window: Rolling window size.
             source: Data source (default "parquet" for efficiency).
             
@@ -180,10 +259,11 @@ class QueryEngine:
             DataFrame with volatility data.
         """
         if source == "parquet" and self.parquet:
-            return self.parquet.compute_volatility(ticker, window)
+            if ticker:
+                return self.parquet.compute_volatility(ticker, window)
+            return self.parquet.compute_volatility_all(window)
         elif source == "sqlite" and self.sqlite:
             # Load data from SQLite and compute
-            from datetime import datetime, timedelta
             start = datetime(2000, 1, 1)
             end = datetime(2100, 12, 31)
             df = self.sqlite.get_price_range(ticker, start, end)

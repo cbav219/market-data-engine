@@ -125,6 +125,32 @@ class TestSQLiteStorage:
         assert 'first_timestamp' in result.columns
         assert 'last_timestamp' in result.columns
     
+    def test_first_last_all_tickers(self, storage, sample_df):
+        """First/last prices per day for all tickers."""
+        storage.insert_data(sample_df)
+        result = storage.get_first_last_prices_per_day()
+        
+        assert set(result['ticker'].unique()) == {'AAPL', 'GOOGL'}
+        assert {'first_price', 'last_price', 'first_timestamp', 'last_timestamp'} <= set(result.columns)
+    
+    def test_avg_daily_volume(self, storage, sample_df):
+        """Average daily volume per ticker aggregates per day first."""
+        storage.insert_data(sample_df)
+        result = storage.get_avg_daily_volume()
+        
+        assert set(result['ticker']) == {'AAPL', 'GOOGL'}
+        assert 'avg_daily_volume' in result.columns
+    
+    def test_top_tickers_by_return(self, storage, sample_df):
+        """Top tickers by return over window."""
+        storage.insert_data(sample_df)
+        start = datetime(2024, 1, 2)
+        end = datetime(2024, 1, 4, 23, 59)
+        result = storage.get_top_tickers_by_return(start, end, limit=2)
+        
+        assert len(result) == 2
+        assert 'return_pct' in result.columns
+    
     def test_file_based_storage(self, tmp_path, sample_df):
         """Test file-based SQLite storage."""
         db_path = tmp_path / "test.db"
@@ -186,9 +212,10 @@ class TestSQLiteSchema:
             cursor.execute("PRAGMA table_info(tickers)")
             columns = {row['name'] for row in cursor.fetchall()}
         
-        assert 'id' in columns
+        assert 'ticker_id' in columns
         assert 'symbol' in columns
         assert 'name' in columns
+        assert 'exchange' in columns
         assert 'created_at' in columns
     
     def test_prices_table_columns(self, storage):
@@ -226,4 +253,4 @@ class TestSQLiteSchema:
             row = cursor.fetchone()
             create_sql = row['sql']
         
-        assert 'FOREIGN KEY (ticker_id) REFERENCES tickers(id)' in create_sql
+        assert 'FOREIGN KEY (ticker_id) REFERENCES tickers(ticker_id)' in create_sql

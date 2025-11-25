@@ -17,15 +17,44 @@ Python system for ingesting, storing, and querying multi-ticker market data usin
 pip install -e ".[dev]"
 ```
 
+## Assignment Workflow (SQLite + Parquet)
+
+```bash
+# 1) Build both backends from provided data
+PYTHONPATH=src python -m market_data_engine.data_loader
+
+# Artifacts created:
+#   - market_data.db (SQLite, schema in schema.sql)
+#   - market_data/ (Parquet, partitioned by ticker)
+
+# 2) Run sample queries via QueryEngine
+PYTHONPATH=src python - <<'PY'
+from datetime import datetime
+from market_data_engine import QueryEngine, SQLiteStorage, ParquetStorage
+
+engine = QueryEngine(SQLiteStorage("market_data.db"), ParquetStorage("market_data"))
+
+start = datetime(2025, 11, 17)
+end = datetime(2025, 11, 18, 23, 59, 59)
+
+print(engine.get_price_range("TSLA", start, end).head())                 # task 1
+print(engine.get_avg_daily_volume())                                     # task 2
+print(engine.get_top_tickers_by_return(start, end, source="sqlite"))     # task 3
+print(engine.get_first_last_prices_per_day().head())                     # task 4
+print(engine.get_rolling_close_average("AAPL", window=5, source="parquet").head())  # parquet rolling avg
+print(engine.get_volatility(None, window=5, source="parquet").head())    # parquet volatility all tickers
+PY
+```
+
 ## Quick Start
 
 ```python
 from market_data_engine import CSVIngester, SQLiteStorage, ParquetStorage, QueryEngine
 from datetime import datetime
 
-# Load CSV data with validation
-ingester = CSVIngester(expected_tickers={'AAPL', 'GOOGL', 'MSFT'})
-df = ingester.load_csv('data/sample_ohlcv.csv')
+# Load CSV data with validation (uses provided market_data_multi.csv)
+ingester = CSVIngester(expected_tickers={'AAPL', 'GOOGL', 'MSFT', 'TSLA', 'AMZN'})
+df = ingester.load_csv('market_data_multi.csv')
 
 # Store in SQLite
 sqlite_storage = SQLiteStorage('market_data.db')
@@ -58,6 +87,14 @@ daily = engine.get_daily_first_last_prices('AAPL', source='sqlite')
 # Compute 5-day rolling volatility (optimized for Parquet)
 volatility = engine.get_volatility('AAPL', window=5, source='parquet')
 ```
+
+## Files and Deliverables
+
+- `market_data_engine/data_loader.py`: one-shot ingest/validate + dual-write to SQLite (`market_data.db`) and Parquet (`market_data/`).
+- `schema.sql`: SQLite schema aligned with the implementation (tickers + prices, indexes).
+- `query_tasks.md`: Filled with query outputs and performance notes.
+- `comparison.md`: Format tradeoff analysis (size, speed, workflow guidance).
+- `tests/`: Pytest suite (ingestion, SQLite, Parquet, query routing, benchmarks).
 
 ## Data Validation
 

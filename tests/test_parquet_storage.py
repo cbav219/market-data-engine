@@ -109,6 +109,46 @@ class TestParquetStorage:
         # First N-1 values should be NaN for N-day window
         assert pd.isna(result['volatility'].iloc[0])
     
+    def test_compute_volatility_all(self, storage, sample_df):
+        """Volatility computation across all tickers."""
+        storage.save_data(sample_df, partition_by_ticker=True)
+        result = storage.compute_volatility_all(window=3)
+        
+        assert set(result['ticker'].unique()) == {'AAPL', 'GOOGL'}
+        assert 'volatility' in result.columns
+    
+    def test_avg_daily_volume(self, storage, sample_df):
+        """Average daily volume per ticker."""
+        storage.save_data(sample_df, partition_by_ticker=True)
+        result = storage.get_avg_daily_volume()
+        
+        assert set(result['ticker']) == {'AAPL', 'GOOGL'}
+        assert 'avg_daily_volume' in result.columns
+    
+    def test_top_tickers_by_return(self, storage, sample_df):
+        """Top tickers by return in window."""
+        storage.save_data(sample_df, partition_by_ticker=True)
+        result = storage.get_top_tickers_by_return('2024-01-02', '2024-01-04', limit=2)
+        
+        assert len(result) == 2
+        assert 'return_pct' in result.columns
+    
+    def test_first_last_prices_per_day(self, storage, sample_df):
+        """First/last prices per day for all tickers."""
+        storage.save_data(sample_df, partition_by_ticker=True)
+        result = storage.get_first_last_prices_per_day()
+        
+        assert set(result['ticker'].unique()) == {'AAPL', 'GOOGL'}
+        assert {'first_price', 'last_price'} <= set(result.columns)
+    
+    def test_rolling_close_average(self, storage, sample_df):
+        """Rolling close average calculation."""
+        storage.save_data(sample_df, partition_by_ticker=True)
+        result = storage.get_rolling_close_average('AAPL', window=3)
+        
+        assert 'rolling_close' in result.columns
+        assert len(result) == 5
+    
     def test_verify_integrity_valid(self, storage, sample_df):
         """Test integrity verification on valid data."""
         storage.save_data(sample_df, partition_by_ticker=True)

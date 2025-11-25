@@ -132,6 +132,44 @@ class TestQueryEngine:
         assert 'volatility' in result.columns
         assert len(result) == 5
     
+    def test_volatility_all_tickers(self, query_engine):
+        """Volatility across all tickers via Parquet."""
+        result = query_engine.get_volatility(None, window=3, source='parquet')
+        assert set(result['ticker'].unique()) == {'AAPL', 'GOOGL'}
+    
+    def test_avg_daily_volume(self, query_engine):
+        """Average daily volume across sources."""
+        sqlite_result = query_engine.get_avg_daily_volume(source='sqlite')
+        parquet_result = query_engine.get_avg_daily_volume(source='parquet')
+        
+        assert set(sqlite_result['ticker']) == {'AAPL', 'GOOGL'}
+        assert set(parquet_result['ticker']) == {'AAPL', 'GOOGL'}
+    
+    def test_top_tickers_by_return(self, query_engine):
+        """Top tickers by return window comparison."""
+        start = datetime(2024, 1, 2)
+        end = datetime(2024, 1, 4, 23, 59)
+        sqlite_top = query_engine.get_top_tickers_by_return(start, end, limit=2, source='sqlite')
+        parquet_top = query_engine.get_top_tickers_by_return(start, end, limit=2, source='parquet')
+        
+        assert len(sqlite_top) == 2
+        assert len(parquet_top) == 2
+        assert 'return_pct' in sqlite_top.columns
+        assert 'return_pct' in parquet_top.columns
+    
+    def test_first_last_prices_per_day(self, query_engine):
+        """First/last prices per day across all tickers."""
+        sqlite_df = query_engine.get_first_last_prices_per_day(source='sqlite')
+        parquet_df = query_engine.get_first_last_prices_per_day(source='parquet')
+        
+        assert set(sqlite_df['ticker'].unique()) == {'AAPL', 'GOOGL'}
+        assert set(parquet_df['ticker'].unique()) == {'AAPL', 'GOOGL'}
+    
+    def test_rolling_close_average(self, query_engine):
+        """Rolling close average can be computed from Parquet."""
+        result = query_engine.get_rolling_close_average('AAPL', window=3, source='parquet')
+        assert 'rolling_close' in result.columns
+    
     def test_compare_sources(self, query_engine):
         """Test comparison of SQLite and Parquet sources."""
         result = query_engine.compare_sources(

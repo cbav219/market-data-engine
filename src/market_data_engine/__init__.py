@@ -6,6 +6,12 @@ from .ingestion import CSVIngester, ValidationError
 from .sqlite_storage import SQLiteStorage
 from .parquet_storage import ParquetStorage
 from .queries import QueryEngine
+from .data_loader import (
+    load_and_validate,
+    build_sqlite_store,
+    build_parquet_store,
+    build_all_assets,
+)
 
 __all__ = [
     "CSVIngester",
@@ -13,4 +19,8 @@ __all__ = [
     "SQLiteStorage",
     "ParquetStorage",
     "QueryEngine",
+    "load_and_validate",
+    "build_sqlite_store",
+    "build_parquet_store",
+    "build_all_assets",
 ]

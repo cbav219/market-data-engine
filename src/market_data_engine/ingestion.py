@@ -77,6 +77,9 @@ class CSVIngester:
         
         # Normalize column names
         df.columns = df.columns.str.lower().str.strip()
+        # Normalize ticker casing/spacing early so downstream checks are consistent
+        if 'ticker' in df.columns:
+            df['ticker'] = df['ticker'].astype(str).str.upper().str.strip()
         
         # Validate and transform data
         self._validate_columns(df)

@@ -38,9 +38,10 @@ class SQLiteStorage:
             # Create tickers table
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS tickers (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ticker_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     symbol TEXT UNIQUE NOT NULL,
                     name TEXT,
+                    exchange TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
@@ -50,13 +51,13 @@ class SQLiteStorage:
                 CREATE TABLE IF NOT EXISTS prices (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     ticker_id INTEGER NOT NULL,
-                    timestamp TIMESTAMP NOT NULL,
+                    timestamp TEXT NOT NULL,
                     open REAL NOT NULL,
                     high REAL NOT NULL,
                     low REAL NOT NULL,
                     close REAL NOT NULL,
                     volume INTEGER NOT NULL,
-                    FOREIGN KEY (ticker_id) REFERENCES tickers(id),
+                    FOREIGN KEY (ticker_id) REFERENCES tickers(ticker_id),
                     UNIQUE(ticker_id, timestamp)
                 )
             """)
@@ -82,17 +83,19 @@ class SQLiteStorage:
         """Get a database connection with context manager."""
         if self._is_memory and self._persistent_conn:
             # For in-memory databases, use the persistent connection
-            yield self._persistent_conn
+            conn = self._persistent_conn
         else:
             # For file-based databases, create a new connection
             conn = sqlite3.connect(self.db_path)
             conn.row_factory = sqlite3.Row
-            try:
-                yield conn
-            finally:
+        conn.execute("PRAGMA foreign_keys = ON")
+        try:
+            yield conn
+        finally:
+            if not self._is_memory:
                 conn.close()
     
-    def insert_ticker(self, symbol: str, name: Optional[str] = None) -> int:
+    def insert_ticker(self, symbol: str, name: Optional[str] = None, exchange: Optional[str] = None) -> int:
         """
         Insert a new ticker or return existing ticker ID.
         
@@ -107,15 +110,15 @@ class SQLiteStorage:
             cursor = conn.cursor()
             
             # Try to get existing ticker
-            cursor.execute("SELECT id FROM tickers WHERE symbol = ?", (symbol,))
+            cursor.execute("SELECT ticker_id FROM tickers WHERE symbol = ?", (symbol,))
             row = cursor.fetchone()
             if row:
-                return row['id']
+                return row['ticker_id']
             
             # Insert new ticker
             cursor.execute(
-                "INSERT INTO tickers (symbol, name) VALUES (?, ?)",
-                (symbol, name)
+                "INSERT INTO tickers (symbol, name, exchange) VALUES (?, ?, ?)",
+                (symbol, name, exchange)
             )
             conn.commit()
             return cursor.lastrowid
@@ -173,7 +176,7 @@ class SQLiteStorage:
         """Get all tickers."""
         with self._get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT id, symbol, name, created_at FROM tickers")
+            cursor.execute("SELECT ticker_id, symbol, name, exchange, created_at FROM tickers")
             return [dict(row) for row in cursor.fetchall()]
     
     def get_price_range(
@@ -198,7 +201,7 @@ class SQLiteStorage:
                 SELECT t.symbol as ticker, p.timestamp, p.open, p.high, 
                        p.low, p.close, p.volume
                 FROM prices p
-                JOIN tickers t ON p.ticker_id = t.id
+                JOIN tickers t ON p.ticker_id = t.ticker_id
                 WHERE t.symbol = ?
                 AND p.timestamp >= ?
                 AND p.timestamp <= ?
@@ -228,7 +231,7 @@ class SQLiteStorage:
             cursor.execute("""
                 SELECT AVG(p.volume) as avg_volume
                 FROM prices p
-                JOIN tickers t ON p.ticker_id = t.id
+                JOIN tickers t ON p.ticker_id = t.ticker_id
                 WHERE t.symbol = ?
             """, (ticker,))
             row = cursor.fetchone()
@@ -249,7 +252,7 @@ class SQLiteStorage:
             query = """
                 SELECT p.timestamp, p.open, p.close
                 FROM prices p
-                JOIN tickers t ON p.ticker_id = t.id
+                JOIN tickers t ON p.ticker_id = t.ticker_id
                 WHERE t.symbol = ?
                 ORDER BY p.timestamp
             """
@@ -293,40 +296,156 @@ class SQLiteStorage:
         Returns:
             DataFrame with date, first_timestamp, first_price, last_timestamp, last_price.
         """
+        return self.get_first_last_prices_per_day(ticker=ticker)
+    
+    def get_first_last_prices_per_day(self, ticker: Optional[str] = None) -> pd.DataFrame:
+        """
+        Get first and last trade prices per day, optionally filtered by ticker.
+        
+        Args:
+            ticker: Optional ticker symbol to filter.
+            
+        Returns:
+            DataFrame with ticker, date, first_timestamp, first_price, last_timestamp, last_price.
+        """
         with self._get_connection() as conn:
-            query = """
-                SELECT p.timestamp, p.open, p.close
-                FROM prices p
-                JOIN tickers t ON p.ticker_id = t.id
-                WHERE t.symbol = ?
-                ORDER BY p.timestamp
+            params = []
+            ticker_filter = ""
+            if ticker:
+                ticker_filter = "WHERE t.symbol = ?"
+                params.append(ticker)
+            
+            query = f"""
+                WITH ordered AS (
+                    SELECT 
+                        t.symbol AS ticker,
+                        DATE(p.timestamp) AS trade_date,
+                        p.timestamp,
+                        p.open,
+                        p.close,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY t.symbol, DATE(p.timestamp)
+                            ORDER BY p.timestamp
+                        ) AS rn_first,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY t.symbol, DATE(p.timestamp)
+                            ORDER BY p.timestamp DESC
+                        ) AS rn_last
+                    FROM prices p
+                    JOIN tickers t ON p.ticker_id = t.ticker_id
+                    {ticker_filter}
+                )
+                SELECT 
+                    ticker,
+                    trade_date AS date,
+                    MAX(CASE WHEN rn_first = 1 THEN timestamp END) AS first_timestamp,
+                    MAX(CASE WHEN rn_first = 1 THEN open END) AS first_price,
+                    MAX(CASE WHEN rn_last = 1 THEN timestamp END) AS last_timestamp,
+                    MAX(CASE WHEN rn_last = 1 THEN close END) AS last_price
+                FROM ordered
+                GROUP BY ticker, trade_date
+                ORDER BY ticker, trade_date
             """
-            df = pd.read_sql_query(query, conn, params=(ticker,))
+            df = pd.read_sql_query(query, conn, params=params)
             
             if df.empty:
-                return pd.DataFrame(columns=[
-                    'date', 'first_timestamp', 'first_price', 
-                    'last_timestamp', 'last_price'
-                ])
+                return df
             
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
-            df['date'] = df['timestamp'].dt.date
+            df['first_timestamp'] = pd.to_datetime(df['first_timestamp'])
+            df['last_timestamp'] = pd.to_datetime(df['last_timestamp'])
+            return df
+    
+    def get_avg_daily_volume(self) -> pd.DataFrame:
+        """
+        Calculate average daily volume per ticker.
+        
+        Returns:
+            DataFrame with ticker and avg_daily_volume.
+        """
+        with self._get_connection() as conn:
+            query = """
+                WITH daily AS (
+                    SELECT 
+                        t.symbol AS ticker,
+                        DATE(p.timestamp) AS trade_date,
+                        SUM(p.volume) AS daily_volume
+                    FROM prices p
+                    JOIN tickers t ON p.ticker_id = t.ticker_id
+                    GROUP BY t.symbol, DATE(p.timestamp)
+                )
+                SELECT 
+                    ticker, 
+                    AVG(daily_volume) AS avg_daily_volume
+                FROM daily
+                GROUP BY ticker
+                ORDER BY ticker
+            """
+            return pd.read_sql_query(query, conn)
+    
+    def get_top_tickers_by_return(
+        self,
+        start_date: datetime,
+        end_date: datetime,
+        limit: int = 3,
+    ) -> pd.DataFrame:
+        """
+        Identify top tickers by return over a given window.
+        
+        Args:
+            start_date: Start date (inclusive).
+            end_date: End date (inclusive).
+            limit: Number of tickers to return.
             
-            daily_data = []
-            for date, group in df.groupby('date'):
-                group = group.sort_values('timestamp')
-                first_row = group.iloc[0]
-                last_row = group.iloc[-1]
-                
-                daily_data.append({
-                    'date': date,
-                    'first_timestamp': first_row['timestamp'],
-                    'first_price': first_row['open'],
-                    'last_timestamp': last_row['timestamp'],
-                    'last_price': last_row['close'],
-                })
-            
-            return pd.DataFrame(daily_data)
+        Returns:
+            DataFrame with ticker and return_pct columns.
+        """
+        with self._get_connection() as conn:
+            query = """
+                WITH filtered AS (
+                    SELECT 
+                        p.timestamp,
+                        p.open,
+                        p.close,
+                        p.ticker_id,
+                        t.symbol
+                    FROM prices p
+                    JOIN tickers t ON p.ticker_id = t.ticker_id
+                    WHERE p.timestamp >= ? AND p.timestamp <= ?
+                ),
+                first_trade AS (
+                    SELECT f.symbol, f.open AS first_open
+                    FROM filtered f
+                    JOIN (
+                        SELECT symbol, MIN(timestamp) AS min_ts
+                        FROM filtered
+                        GROUP BY symbol
+                    ) mins
+                    ON f.symbol = mins.symbol AND f.timestamp = mins.min_ts
+                ),
+                last_trade AS (
+                    SELECT f.symbol, f.close AS last_close
+                    FROM filtered f
+                    JOIN (
+                        SELECT symbol, MAX(timestamp) AS max_ts
+                        FROM filtered
+                        GROUP BY symbol
+                    ) maxs
+                    ON f.symbol = maxs.symbol AND f.timestamp = maxs.max_ts
+                )
+                SELECT 
+                    f.symbol AS ticker,
+                    ((l.last_close - f.first_open) / f.first_open) * 100 AS return_pct
+                FROM first_trade f
+                JOIN last_trade l ON f.symbol = l.symbol
+                ORDER BY return_pct DESC
+                LIMIT ?
+            """
+            df = pd.read_sql_query(
+                query,
+                conn,
+                params=(start_date.isoformat(), end_date.isoformat(), limit),
+            )
+            return df
     
     def close(self) -> None:
         """Close the database connection."""
